@@ -1,83 +1,64 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
-import numpy as np
+import base64, cv2, numpy as np
 import tensorflow as tf
 from tensorflow.keras.preprocessing import image
+from flask_socketio import SocketIO, emit
 
 
 
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for frontend communication
+CORS(app, supports_credentials=True)  
+socketio = SocketIO(app,
+                    cors_allowed_origins="*")
 
 
-# # Load your pre-trained emotion recognition model (ensure it's the correct path)
+
 model = tf.keras.models.load_model('C:\\Users\\fdrla\\Downloads\\my_model.h5')
-model.summary() 
-def preprocess_image(img_path: str):
-    """
-    Preprocess the image to match the input format of the model:
-    - Resize to 48x48
-    - Convert to grayscale
-    - Normalize pixel values
-    - Add batch dimension
-    """
-    # Load the image with grayscale=True and resize to 48x48
-    img = image.load_img(img_path, color_mode='grayscale', target_size=(48, 48))
-    
-    # Convert the image to an array
-    x = image.img_to_array(img)
-    
-    # Add batch dimension (this makes it (1, 48, 48, 1))
-    x = np.expand_dims(x, axis=0)
-    
-    # Normalize pixel values to [0, 1]
-    x /= 255
-    
-    return x
+class_names = ["Anger", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
 
-def predict_emotion(image_path: str):
-    """
-    Function to predict the emotion from the image using the pre-trained model.
-    """
-    # Preprocess the image
-    img_expanded = preprocess_image(image_path)
+def preprocess_still(img_path: str) -> np.ndarray:
+    """Resize to 48×48 gray, normalise to 0-1 and add batch axis."""
+    img = image.load_img(img_path, color_mode="grayscale", target_size=(48, 48))
+    x = image.img_to_array(img) / 255.0
+    return np.expand_dims(x, axis=0)                # (1, 48, 48, 1)
 
-    # Get predictions
-    predictions = model.predict(img_expanded)
+def preprocess_frame(b64_jpeg: str) -> np.ndarray:
+    """Decode base64 JPEG -> 48×48 gray image ready for the model."""
+    jpg_original = base64.b64decode(b64_jpeg.split(",")[1])
+    frame = cv2.imdecode(np.frombuffer(jpg_original, np.uint8), cv2.IMREAD_COLOR)
+    frame = cv2.cvtColor(cv2.resize(frame, (48, 48)), cv2.COLOR_BGR2GRAY) / 255.0
+    return frame.reshape(1, 48, 48, 1)              # (1, 48, 48, 1)
 
-    # Get the class with the highest probability (assuming it's a multi-class classification)
-    predicted_class = np.argmax(predictions, axis=1)
-
-    # Map the class index to an emotion label (modify according to your model's output classes)
-    emotion_labels = ["Anger", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"]
-    predicted_emotion = emotion_labels[predicted_class[0]]
-
-    return predicted_emotion
+def predict(x: np.ndarray) -> dict:
+    """Return {'label': str, 'conf': float}."""
+    p = model.predict(x, verbose=0)[0]
+    idx = int(np.argmax(p))
+    return {"label": class_names[idx], "conf": float(p[idx])}
 
 @app.route("/predict-emotion", methods=["POST"])
 def predict_emotion_route():
-    # Check if an image is provided
-    if "image" not in request.files:
+    if "image" not in request.files or request.files["image"].filename == "":
         return jsonify({"error": "No image file provided"}), 400
-    
-    image = request.files["image"]  # Get the image file from the request
-    
-    if image.filename == "":
-        return jsonify({"error": "No selected file"}), 400
 
+    tmp_path = "temp_image.jpg"
+    request.files["image"].save(tmp_path)
+    result = predict(preprocess_still(tmp_path))
+    return jsonify(result)
+
+@socketio.on("frame")
+def handle_frame(data: str):
     try:
-        # Save the uploaded image to a temporary file
-        temp_image_path = 'temp_image.jpg'
-        image.save(temp_image_path)
+        print("🔹 received frame")                    # <— prove handler ran
+        result = predict(preprocess_frame(data))
+        print("🔸 result", result)                   # <— now prints cleanly
+        emit("prediction", result)
+    except Exception as exc:
+        print("⚠️ socket error:", exc)              # <— see the root cause
+        emit("prediction", {"label": "error", "conf": 0.0})
 
-        # Call the emotion prediction function
-        emotion = predict_emotion(temp_image_path)
-
-        return jsonify({"emotion": emotion})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=True)

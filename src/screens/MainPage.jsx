@@ -1,11 +1,13 @@
 import React, { useRef, useState } from 'react'
+import WebcamDetection from './WebcamDetection';
 
 
 export default function MainPage() {
     const [imageSrc , setImageSrc] = useState(null) ;
     const fileInputRef = useRef(null) ;
     const [loading, setLoading] = useState(null) ;
-    const [prediction, setPrediction] = useState(null) ;
+    const [prediction, setPrediction] = useState({label:null , conf:null}) ;
+    const [mode, setMode] = useState("upload");
 
     const handleUpload = async () => {
       if (!fileInputRef.current.files[0]) {
@@ -24,8 +26,12 @@ export default function MainPage() {
             body: formData, // Send as FormData
         });
         const data = await response.json();
-        if (data.emotion) {
-            setPrediction(data.emotion); // Set the predicted emotion
+        if (data.label && data.conf) {
+            const pred = {
+              label: data.label ,
+              conf: data.conf
+            } ;
+            setPrediction(pred); // Set the predicted emotion
         } else {
             setPrediction("Error in prediction");
         }
@@ -45,8 +51,7 @@ export default function MainPage() {
       };
 
     return (
-      <div 
-      style={{
+        <div style={{
         height: '100vh' ,
         width: '100vw' ,
         display: 'flex' ,
@@ -55,6 +60,14 @@ export default function MainPage() {
         justifyContent: 'center' , 
         border: '2px solid white' ,
       }}>
+      <div style={{ marginBottom: 20 }}>
+        <button onClick={() => setMode("upload")}>Upload mode</button>
+        <button onClick={() => setMode("webcam")}>Webcam mode</button>
+      </div>
+
+      {mode === "webcam" && <WebcamDetection />}
+      {mode === "upload" && (
+        <>
         <input
         type="file"
         ref={fileInputRef}
@@ -79,7 +92,14 @@ export default function MainPage() {
       )}
         <button onClick={() => fileInputRef.current.click()}>Upload image</button>
         <button onClick={handleUpload}>{ loading ? "Processing..." : "Let AI guess the emotion" }</button>
-        <text>{prediction}</text>
-      </div>
+        {prediction.label !== null && prediction.conf !== null && (
+        <>
+          <p>Emotion: {prediction.label}</p>
+          <p>Confidence score: {prediction.conf}</p>
+        </>
+       )}
+      </>
+      )}
+    </div>
     );
 }
